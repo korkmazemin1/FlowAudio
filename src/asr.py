@@ -1,11 +1,8 @@
 import sys
 import time
-import datetime
-import os
 import numpy as np
 import torch
 import sounddevice as sd
-import soundfile as sf  # Required for saving debug WAV files
 import psutil
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QWidget, 
                              QTextEdit, QLabel, QPushButton, QHBoxLayout)
@@ -17,8 +14,7 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 # ==========================================
 MODEL_ID = "openai/whisper-tiny"
 SAMPLE_RATE = 16000
-# IMPORTANT: Set to 2 based on your device list (Microphone Array)
-# If this fails, try 14 (WASAPI driver for the same mic)
+# IMPORTANT: Keep using ID 2 as it worked for you
 MIC_DEVICE_ID = 2 
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 TORCH_DTYPE = torch.float16 if torch.cuda.is_available() else torch.float32
@@ -56,10 +52,10 @@ class ModelLoader(QThread):
 class AudioRecorder(QThread):
     """
     Background thread to capture audio from the specific microphone (ID 2).
-    Saves the output as a WAV file automatically for verification.
+    Stores audio in memory (RAM) only. No file saving.
     """
-    # Emits: (audio_array, filename_path)
-    recording_finished = pyqtSignal(np.ndarray, str) 
+    # Emits: (audio_array) - No filename anymore
+    recording_finished = pyqtSignal(np.ndarray) 
     log_message = pyqtSignal(str)
 
     def __init__(self):
@@ -99,26 +95,17 @@ class AudioRecorder(QThread):
             # Flatten to 1D array
             full_audio = np.concatenate(self.audio_buffer, axis=0).flatten()
             
-            # Generate unique filename with timestamp
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"recording_{timestamp}.wav"
+            # REMOVED: File saving logic (sf.write)
             
-            # Save to WAV file using SoundFile library
-            try:
-                sf.write(filename, full_audio, SAMPLE_RATE)
-                abs_path = os.path.abspath(filename)
-            except Exception as e:
-                print(f"Error saving WAV: {e}")
-                abs_path = "Error saving file"
-
-            self.recording_finished.emit(full_audio, abs_path)
+            # Emit the audio data directly from RAM
+            self.recording_finished.emit(full_audio)
 
     def stop(self):
         self.is_recording = False
 
 class AudioPlayer(QThread):
     """
-    Background thread to play back the recorded audio.
+    Background thread to play back the recorded audio from memory.
     """
     playback_finished = pyqtSignal()
     log_message = pyqtSignal(str)
@@ -135,7 +122,7 @@ class AudioPlayer(QThread):
             return
         
         try:
-            # Play audio using sounddevice (Output defaults to system default speaker)
+            # Play audio using sounddevice
             sd.play(self.audio_data, SAMPLE_RATE)
             sd.wait() # Block thread until audio finishes
             self.playback_finished.emit()
@@ -197,8 +184,7 @@ class MainWindow(QMainWindow):
         self.model = None
         self.processor = None
         self.current_audio = None 
-        self.last_filename = ""
-
+        
         # Window Config
         self.setWindowTitle(f"FlowAudio - Mic ID: {MIC_DEVICE_ID}")
         self.setGeometry(100, 100, 650, 500)
@@ -311,30 +297,28 @@ class MainWindow(QMainWindow):
             self.is_recording = False
             self.btn_record.setText("⏺ Record")
             self.btn_record.setStyleSheet("color: #ff5555;")
-            self.update_status("Finalizing audio & Saving WAV...")
+            self.update_status("Finalizing audio...")
             self.recorder.stop()
 
-    def on_recording_finished(self, audio_array, filename):
-        """Called when audio is captured and saved."""
+    def on_recording_finished(self, audio_array):
+        """Called when audio is captured (Stored in RAM)."""
         self.current_audio = audio_array
-        self.last_filename = filename
         
         duration = len(audio_array) / SAMPLE_RATE
         
-        # Log to Text Area for visibility
-        self.text_area.append(f"📁 Saved: {filename}")
-        self.text_area.append(f"⏱ Duration: {duration:.2f}s")
+        # Log to Text Area
+        self.text_area.append(f"💾 Captured to RAM. Duration: {duration:.2f}s")
         
-        self.update_status(f"Saved: {os.path.basename(filename)}")
+        self.update_status(f"Captured {duration:.1f}s. Ready.")
         
         # Enable next steps
         self.btn_play.setEnabled(True)
         self.btn_asr.setEnabled(True)
 
     def play_audio(self):
-        """Plays the currently stored audio."""
+        """Plays the currently stored audio from RAM."""
         if self.current_audio is not None:
-            self.update_status(f"🔊 Playing... ({os.path.basename(self.last_filename)})")
+            self.update_status("🔊 Playing from memory...")
             self.btn_play.setEnabled(False) 
             self.btn_record.setEnabled(False)
             self.btn_asr.setEnabled(False)
