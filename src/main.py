@@ -235,7 +235,7 @@ class MainWindow(QMainWindow):
         # Dynamic Import & Instantiation
         if "nvidia" in selected_model.lower():
             # Use NVIDIA NeMo Engine
-            from asr_engine_nvidia import NvidiaModelLoader
+            from archive.asr_engine_nvidia import NvidiaModelLoader
             self.active_engine_type = "nvidia"
             self.loader = NvidiaModelLoader(selected_model)
         else:
@@ -262,7 +262,7 @@ class MainWindow(QMainWindow):
         
         # Initialize the correct Transcriber based on active engine
         if self.active_engine_type == "nvidia":
-            from asr_engine_nvidia import NvidiaTranscriber
+            from archive.asr_engine_nvidia import NvidiaTranscriber
             self.transcriber = NvidiaTranscriber(model, processor)
         else:
             from asr_engine_openai import OpenAITranscriber
