@@ -3,7 +3,7 @@ name = "flowaudio"
 version = "0.1.0"
 description = "AI Voice Processing project with Hugging Face and PyTorch CUDA 12.1"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "transformers>=4.35.0",
     "accelerate",
@@ -19,13 +19,35 @@ dependencies = [
     "torchaudio",
     "sounddevice>=0.5.3",
     "pyqt6>=6.10.1",
+    "cython>=3.2.3",
+    # CRITICAL: We list the problematic libs here to ensure they are installed
+    "nemo-toolkit[asr]>=1.23.0",
+    "onnx>=1.19.1",
+    "ml_dtypes>=0.5.0",
+    "numpy<2.0"
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# ========================================================
+# UV TOOL CONFIGURATION (THE MAGIC FIX IS HERE)
+# ========================================================
+
+[tool.uv]
+# This 'override-dependencies' section is the "Nuclear Option".
+# It forces uv to install THESE specific versions, ignoring any
+# upper-bound limits set by NeMo or other libraries.
+# This fixes the "float4_e2m1fn" error by forcing ml_dtypes >= 0.5.0.
+override-dependencies = [
+    "ml_dtypes>=0.5.0",
+    "onnx>=1.19.1",
+    "numpy<2.0" 
+]
+
 # --- UV Specific Configuration for PyTorch CUDA 12.1 ---
+# Ensures we download the GPU-enabled version of PyTorch from the official index
 [[tool.uv.index]]
 name = "pytorch-cu121"
 url = "https://download.pytorch.org/whl/cu121"
@@ -35,5 +57,6 @@ explicit = true
 torch = { index = "pytorch-cu121" }
 torchvision = { index = "pytorch-cu121" }
 torchaudio = { index = "pytorch-cu121" }
+
 [tool.hatch.build.targets.wheel]
 packages = ["."]
