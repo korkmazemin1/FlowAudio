@@ -1,234 +1,199 @@
 import sys
-import gc
-import torch
-import sounddevice as sd # Required for listing microphones
+import re  
+import time
+from datetime import datetime
+import sounddevice as sd
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QWidget, 
                              QTextEdit, QLabel, QPushButton, QHBoxLayout, 
                              QComboBox, QProgressBar, QGroupBox)
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QTextCursor
 
-# --- MODULAR IMPORTS ---
 from config import ASRConfig
 from utils.monitor import SystemMonitor
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.model = None
-        self.loader = None
-        self.live_transcriber = None
+        self.pipeline = None 
         
         self.init_ui()
-        self.populate_microphones() # Scan mics on startup
+        self.populate_microphones()
         
-        # Hardware Stats Timer
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_stats)
-        self.timer.start(1000)
+        self.stats_timer = QTimer()
+        self.stats_timer.timeout.connect(self.update_stats)
+        self.stats_timer.start(1000)
 
     def init_ui(self):
-        self.setWindowTitle("FlowAudio Modular AI System")
-        self.resize(1000, 800)
+        """Builds the main user interface layout."""
+        self.setWindowTitle("FlowAudio - Telemetry Enabled Core")
+        self.resize(1000, 850)
         self.setStyleSheet("background-color: #121212; color: #E0E0E0; font-family: 'Segoe UI';")
         
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
 
-        # ==========================================
-        # SECTION 1: HARDWARE & SETTINGS
-        # ==========================================
-        hw_group = QGroupBox("Device Settings")
-        hw_group.setStyleSheet("QGroupBox { border: 1px solid #444; border-radius: 5px; margin-top: 10px; font-weight: bold; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }")
+        # 1. System Controls Group
+        hw_group = QGroupBox("System Controls")
+        hw_group.setStyleSheet("QGroupBox { border: 1px solid #444; border-radius: 5px; margin-top: 10px; font-weight: bold; }")
         hw_layout = QHBoxLayout(hw_group)
 
-        # -- Engine Selection --
-        self.combo_engine = QComboBox()
-        self.combo_engine.addItems(["faster/large-v3", "faster/medium"])
-        self.combo_engine.setStyleSheet("background: #333; color: white; padding: 5px; border: 1px solid #555;")
-        
-        # -- Microphone Selection --
         self.combo_mic = QComboBox()
-        self.combo_mic.setStyleSheet("background: #333; color: white; padding: 5px; border: 1px solid #555; min-width: 250px;")
-        self.combo_mic.currentIndexChanged.connect(self.on_mic_changed) # Event Listener
+        self.combo_mic.setStyleSheet("background: #333; color: white; padding: 10px; min-width: 300px; font-size: 14px;")
+        self.combo_mic.currentIndexChanged.connect(self.on_mic_changed)
 
-        # -- Load Button --
-        btn_load = QPushButton("⬇ LOAD ENGINE")
-        btn_load.setStyleSheet("background: #0055AA; color: white; padding: 8px 15px; font-weight: bold; border-radius: 5px;")
-        btn_load.clicked.connect(self.load_engine)
-
-        hw_layout.addWidget(QLabel("🧠 AI Model:"))
-        hw_layout.addWidget(self.combo_engine)
-        hw_layout.addWidget(QLabel("🎤 Microphone:"))
-        hw_layout.addWidget(self.combo_mic)
-        hw_layout.addWidget(btn_load)
-        
-        layout.addWidget(hw_group)
-
-        # ==========================================
-        # SECTION 2: OUTPUT AREA
-        # ==========================================
-        self.text_area = QTextEdit()
-        self.text_area.setPlaceholderText("Select your Microphone, Load the Engine, and Start Live Session...")
-        self.text_area.setReadOnly(True)
-        self.text_area.setStyleSheet("background: #1E1E1E; color: #00FFCC; font-size: 16px; border: 1px solid #333; border-radius: 5px;")
-        layout.addWidget(self.text_area)
-
-        # ==========================================
-        # SECTION 3: LIVE CONTROL & VU METER
-        # ==========================================
-        control_group = QGroupBox("Live Control")
-        control_group.setStyleSheet("QGroupBox { border: 1px solid #444; border-radius: 5px; margin-top: 10px; font-weight: bold; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }")
-        control_layout = QVBoxLayout(control_group)
-        
-        # -- VU Meter Bar --
-        self.vu_meter = QProgressBar()
-        self.vu_meter.setRange(0, 100)
-        self.vu_meter.setValue(0)
-        self.vu_meter.setTextVisible(False)
-        self.vu_meter.setFixedHeight(12)
-        self.vu_meter.setStyleSheet("""
-            QProgressBar { border: 1px solid #444; border-radius: 6px; background-color: #222; }
-            QProgressBar::chunk { background-color: #00FF00; border-radius: 6px; }
-        """)
-        
-        vu_label_layout = QHBoxLayout()
-        vu_label_layout.addWidget(QLabel("Volume Level:"))
-        vu_label_layout.addWidget(self.vu_meter)
-        control_layout.addLayout(vu_label_layout)
-        
-        # -- Start/Stop Button --
-        self.btn_live = QPushButton("🎙️ START LIVE SESSION")
-        self.btn_live.setEnabled(False)
+        self.btn_live = QPushButton("🚀 START TRIPLE ENGINE")
         self.btn_live.setCheckable(True)
+        self.btn_live.setMinimumHeight(45)
         self.btn_live.setStyleSheet("""
-            QPushButton { background-color: #222; color: #888; padding: 15px; font-size: 16px; font-weight: bold; border-radius: 8px; border: 1px solid #444; }
-            QPushButton:enabled { color: white; border-color: #00FFCC; }
-            QPushButton:checked { background-color: #880000; border-color: #FF0000; color: white; }
+            QPushButton { background: #222; color: #aaa; font-weight: bold; font-size: 14px; border: 1px solid #444; border-radius: 5px; }
+            QPushButton:checked { background: #006600; color: white; border-color: #00FF00; }
+            QPushButton:hover { border-color: #666; }
         """)
         self.btn_live.clicked.connect(self.toggle_live)
-        control_layout.addWidget(self.btn_live)
-        
-        layout.addWidget(control_group)
 
-        # ==========================================
-        # SECTION 4: STATUS BAR
-        # ==========================================
+        hw_layout.addWidget(QLabel("🎤 Input Source:"))
+        hw_layout.addWidget(self.combo_mic)
+        hw_layout.addWidget(self.btn_live)
+        layout.addWidget(hw_group)
+
+        # 2. Text Output Area
+        self.text_area = QTextEdit()
+        self.text_area.setPlaceholderText("System Ready.\n\nMode: Instant Rendering with Auto-Cleaning & Telemetry\nWorkers: 3 (Triple Parallel)\nModel: faster/medium")
+        self.text_area.setReadOnly(True)
+        self.text_area.setStyleSheet("""
+            QTextEdit {
+                background: #1E1E1E; color: #00FFCC; font-size: 22px; 
+                border: 1px solid #333; line-height: 1.6; padding: 20px;
+            }
+        """)
+        layout.addWidget(self.text_area)
+
+        # 3. Footer (VU Meter, Status & Telemetry)
+        footer_layout = QHBoxLayout()
+        
+        self.vu_meter = QProgressBar()
+        self.vu_meter.setRange(0, 100)
+        self.vu_meter.setTextVisible(False)
+        self.vu_meter.setFixedWidth(100)
+        self.vu_meter.setStyleSheet("QProgressBar { border: 1px solid #444; background: #222; height: 8px;} QProgressBar::chunk { background: #00FF00; }")
+        
+        # New: Latency Labels
+        self.lbl_latency = QLabel("Latency: 0.0s")
+        self.lbl_latency.setStyleSheet("color: #FF5555; font-weight: bold; margin-left: 10px;")
+        
+        self.lbl_times = QLabel("In: --:--:-- | Out: --:--:--")
+        self.lbl_times.setStyleSheet("color: #888; margin-left: 10px; font-size: 11px;")
+
         self.status_bar = QLabel("System Idle.")
-        self.status_bar.setStyleSheet("color: #888; font-size: 12px;")
-        self.status_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.status_bar)
+        self.status_bar.setStyleSheet("color: #888; margin-left: 20px;")
+        
+        footer_layout.addWidget(QLabel("Vol:"))
+        footer_layout.addWidget(self.vu_meter)
+        footer_layout.addWidget(self.lbl_latency)
+        footer_layout.addWidget(self.lbl_times)
+        footer_layout.addStretch()
+        footer_layout.addWidget(self.status_bar)
+        layout.addLayout(footer_layout)
 
-    # --- MICROPHONE LOGIC ---
-    def populate_microphones(self):
-        """Scans system audio devices and populates the combo box."""
-        self.combo_mic.clear()
-        devices = sd.query_devices()
+    # --- TELEMETRY DISPLAY ---
+    def update_telemetry(self, capture_ts, finish_ts, latency, avg_latency):
+        """Updates the UI with real-time latency stats."""
+        # Format timestamps (e.g., 14:30:05.123)
+        t_in = datetime.fromtimestamp(capture_ts).strftime('%H:%M:%S.%f')[:-3]
+        t_out = datetime.fromtimestamp(finish_ts).strftime('%H:%M:%S.%f')[:-3]
         
-        input_devices = []
-        for i, dev in enumerate(devices):
-            # Filter only input devices (max_input_channels > 0)
-            if dev['max_input_channels'] > 0:
-                name = f"{i}: {dev['name']}"
-                self.combo_mic.addItem(name, userData=i) # Store ID as UserData
-                input_devices.append(i)
-
-        # Try to select the default one from Config
-        index = self.combo_mic.findData(ASRConfig.MIC_DEVICE_ID)
-        if index >= 0:
-            self.combo_mic.setCurrentIndex(index)
+        # Update labels
+        self.lbl_latency.setText(f"Latency: {latency:.2f}s (Avg: {avg_latency:.2f}s)")
+        self.lbl_times.setText(f"In: {t_in} | Out: {t_out}")
         
-        self.log_to_ui(f"🔍 Found {len(input_devices)} microphones.")
-
-    def on_mic_changed(self, index):
-        """Updates the Global Config when user selects a mic."""
-        if index < 0: return
-        
-        mic_id = self.combo_mic.currentData()
-        mic_name = self.combo_mic.currentText()
-        
-        # Update Global Config
-        ASRConfig.MIC_DEVICE_ID = mic_id
-        
-        self.log_to_ui(f"🎤 Microphone Changed to: {mic_name} (ID: {mic_id})")
-        
-        # If live session is running, warn user to restart
-        if self.btn_live.isChecked():
-            self.update_status("⚠️ Restart Live Session to apply Mic change!")
-
-    # --- ENGINE LOGIC ---
-    def load_engine(self):
-        model_name = self.combo_engine.currentText()
-        self.log_to_ui(f"🛠️ Loading Engine: {model_name}...")
-        
-        if self.model: 
-            del self.model
-            gc.collect()
-            torch.cuda.empty_cache()
-
-        from engines.fast_engine import FastModelLoader
-        
-        self.loader = FastModelLoader(model_name)
-        self.loader.log_message.connect(self.update_status)
-        self.loader.finished_loading.connect(self.on_engine_ready)
-        self.loader.start()
-
-    def on_engine_ready(self, model, _):
-        if model:
-            self.model = model
-            self.btn_live.setEnabled(True)
-            self.update_status("✅ Engine Loaded Successfully.")
+        # Visual Warning for High Latency
+        if latency > 2.0:
+            self.lbl_latency.setStyleSheet("color: red; font-weight: bold; margin-left: 10px;")
         else:
-            self.update_status("❌ Engine Failed to Load.")
+            self.lbl_latency.setStyleSheet("color: #00FF00; font-weight: bold; margin-left: 10px;")
 
-    def toggle_live(self, active):
-        if active:
-            self.btn_live.setText("⏹ STOP LIVE SESSION")
-            self.text_area.clear()
-            self.log_to_ui(f"🎙️ Starting Stream on Mic ID: {ASRConfig.MIC_DEVICE_ID}")
-            
-            from engines.fast_engine import RealTimeTranscriber
-            self.live_transcriber = RealTimeTranscriber(self.model)
-            
-            self.live_transcriber.partial_transcript.connect(self.append_text)
-            self.live_transcriber.log_message.connect(self.update_status)
-            self.live_transcriber.volume_level.connect(self.update_vu_meter)
-            
-            self.live_transcriber.start()
-        else:
-            self.btn_live.setText("🎙️ START LIVE SESSION")
-            self.vu_meter.setValue(0)
-            if self.live_transcriber:
-                self.live_transcriber.stop()
-                self.live_transcriber.wait()
+    # --- SMART TEXT CLEANER ---
+    def append_text_instantly(self, text):
+        if not text: return
+        clean_text = text.replace("...", " ").strip()
+        clean_text = re.sub(r'\s+', ' ', clean_text)
 
-    def update_vu_meter(self, level):
-        self.vu_meter.setValue(level)
+        current_text = self.text_area.toPlainText().strip()
+        if current_text:
+            last_word = current_text.split()[-1]
+            first_word_new = clean_text.split()[0]
+            
+            last_word_pure = re.sub(r'[^\w\s]', '', last_word).lower()
+            first_word_pure = re.sub(r'[^\w\s]', '', first_word_new).lower()
 
-    def append_text(self, text):
-        self.text_area.append(f"🗣️ {text}")
+            if last_word_pure == first_word_pure:
+                parts = clean_text.split()[1:]
+                clean_text = " ".join(parts)
+
+        if not clean_text: return
+
+        cursor = self.text_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        
+        if self.text_area.toPlainText() and not self.text_area.toPlainText().endswith(" ") and not clean_text.startswith(" "):
+            cursor.insertText(" ")
+            
+        cursor.insertText(clean_text)
+        self.text_area.setTextCursor(cursor)
         sb = self.text_area.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def log_to_ui(self, msg):
-        self.text_area.append(f"<span style='color: gray;'>{msg}</span>")
+    # --- SYSTEM LOGIC ---
+    def populate_microphones(self):
+        self.combo_mic.clear()
+        devices = sd.query_devices()
+        for i, dev in enumerate(devices):
+            if dev['max_input_channels'] > 0:
+                self.combo_mic.addItem(f"{i}: {dev['name']}", userData=i)
+        
+        idx = self.combo_mic.findData(ASRConfig.MIC_DEVICE_ID)
+        if idx >= 0: self.combo_mic.setCurrentIndex(idx)
+
+    def on_mic_changed(self, index):
+        if index >= 0:
+            ASRConfig.MIC_DEVICE_ID = self.combo_mic.currentData()
+
+    def toggle_live(self, active):
+        if active:
+            if self.pipeline: 
+                self.pipeline.stop()
+                self.pipeline.wait()
+            
+            self.btn_live.setText("⏹ STOP SYSTEM")
+            self.text_area.clear()
+            
+            from engines.fast_engine import MultiThreadedTranscriber
+            
+            self.pipeline = MultiThreadedTranscriber() 
+            
+            self.pipeline.partial_transcript.connect(self.append_text_instantly)
+            self.pipeline.latency_data.connect(self.update_telemetry) # <--- Connect Telemetry
+            self.pipeline.volume_level.connect(self.vu_meter.setValue)
+            self.pipeline.log_message.connect(self.update_status)
+            
+            self.pipeline.start()
+        else:
+            self.btn_live.setText("🚀 START TRIPLE ENGINE")
+            if self.pipeline:
+                self.pipeline.stop()
+                self.pipeline.wait()
+                self.update_status("System Stopped.")
 
     def update_status(self, msg):
-        clean_msg = msg.split("|")[0]
-        # Keep stats if available
-        current_text = self.status_bar.text()
-        if "|" in current_text:
-            stats = current_text.split("|")[-1].strip()
-            self.status_bar.setText(f"{clean_msg} | {stats}")
-        else:
-            self.status_bar.setText(clean_msg)
+        self.status_bar.setText(msg.split("|")[0])
 
     def update_stats(self):
         stats = SystemMonitor.get_stats()
-        current_msg = self.status_bar.text().split("|")[0].strip()
-        self.status_bar.setText(f"{current_msg} | {stats}")
+        curr = self.status_bar.text().split("|")[0]
+        self.status_bar.setText(f"{curr} | {stats}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
